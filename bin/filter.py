@@ -86,44 +86,56 @@ def get_archive_metadata(pathname: Path):
     return results
 
 
-def filter_granule_worker(out_stream,
-                          raw_zips,
-                          good_tile_ids,
-                          pkgdir):
+def filter_granules(out_stream,
+                    raw_zips,
+                    good_tile_ids,
+                    pkgdir):
     count = 0
-    for level1_dataset in raw_zips: #_level1_dataset_path_iter(Path(level1_root), *find_options):
-        try:
-            container = acquisitions(str(level1_dataset))
-        except Exception as e:
-            logging.warning('encountered unexpected error for %s: %s', str(level1_dataset), e)
-            logging.exception(e)
-            continue
-
-        granule_md = get_archive_metadata(level1_dataset)
-
-        for granule, sensing_date in granule_md.items():
-            tile_id = granule.split('_')[-2]
-            if tile_id not in good_tile_ids:
-                logging.info('granule %s with MGRS tile ID %s outside AOI', granule, tile_id)
-                continue
-
-            ymd = sensing_date.strftime('%Y-%m-%d')
-            package = Package(
-                level1=str(level1_dataset),
-                workdir='',
-                granule=granule,
-                pkgdir=join(pkgdir, ymd)
-            )
-            if package.output().exists():
-                logging.debug('granule %s already processed', granule)
-                continue
-
-            logging.info('level1 dataset %s needs to be processed', level1_dataset)
-            print(level1_dataset, file=out_stream)
-            count += len(granule_md.keys())  # To handle multigranule files
-            break
+    
+    for level1_dataset in raw_zips:
+        count = filter_granule(out_stream,
+                               level1_dataset,
+                               good_tile_ids,
+                               pkgdir,
+                               count)
     return out_stream, count
 
+def filter_granule(out_stream,
+                   level1_dataset,
+                   good_tile_ids,
+                   pkgdir,
+                   count):
+    try:
+        container = acquisitions(str(level1_dataset))
+    except Exception as e:
+        logging.warning('encountered unexpected error for %s: %s', str(level1_dataset), e)
+        logging.exception(e)
+        return count
+
+    granule_md = get_archive_metadata(level1_dataset)
+
+    for granule, sensing_date in granule_md.items():
+        tile_id = granule.split('_')[-2]
+        if tile_id not in good_tile_ids:
+            logging.info('granule %s with MGRS tile ID %s outside AOI', granule, tile_id)
+            return count
+
+        ymd = sensing_date.strftime('%Y-%m-%d')
+        package = Package(
+            level1=str(level1_dataset),
+            workdir='',
+            granule=granule,
+            pkgdir=join(pkgdir, ymd)
+        )
+        if package.output().exists():
+            logging.debug('granule %s already processed', granule)
+            return count
+
+        logging.info('level1 dataset %s needs to be processed', level1_dataset)
+        print(level1_dataset, file=out_stream)
+        count += len(granule_md.keys())  # To handle multigranule files
+        break
+    return count
 
 @click.group()
 def cli():
@@ -135,13 +147,15 @@ def cli():
               help="The unfiltered level1 scene list.")
 @click.option('--s2-aoi', default=DEFAULT_S2_AOI, type=str,
               help="List of MGRS tiles of interest.")
-@click.option('--pkgdir', default=DEFAULT_PKGDIR, type=click.Path(file_okay=False, writable=True),
+@click.option('--pkgdir', default=DEFAULT_PKGDIR, type=click.Path(file_okay=False),
               help="The base output packaged directory.")
 @click.option("--workdir", default=DEFAULT_WORKDIR, type=click.Path(file_okay=False, writable=True),
               help="The base output working directory.")
 @click.option("--logdir", default=DEFAULT_LOGDIR, type=click.Path(file_okay=False, writable=True),
               help="The base logging and scripts output directory.")
-def filter(level1_list, s2_aoi, workdir, logdir, pkgdir):
+@click.option('--file-prefix', default='filtered', type=str,
+              help="The prefix of the output file.")
+def filter(level1_list, s2_aoi, workdir, logdir, pkgdir, file_prefix):
     
     click.echo(' '.join(sys.argv))
 
@@ -152,17 +166,17 @@ def filter(level1_list, s2_aoi, workdir, logdir, pkgdir):
     #print (paths)
 
     out_stream = tempfile.NamedTemporaryFile(mode="w+",
-                                             prefix='filtered',
+                                             prefix=file_prefix,
                                              suffix='.txt',
                                              delete=False,
                                              dir=workdir,)
     # Read area of interest list
     with open(s2_aoi) as csv:
         good_tile_ids = {'T' + tile.strip() for tile in csv}
-    filter_granule_worker(out_stream,
-                          raw_zips,
-                          good_tile_ids,
-                          pkgdir)
+    filter_granules(out_stream,
+                    raw_zips,
+                    good_tile_ids,
+                    pkgdir)
     out_stream.flush()
     #out_stream.close()
     print(out_stream.name)
